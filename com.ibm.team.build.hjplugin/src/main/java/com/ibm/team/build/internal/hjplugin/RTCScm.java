@@ -12,10 +12,12 @@
 package com.ibm.team.build.internal.hjplugin;
 
 import hudson.AbortException;
+import hudson.EnvVars;
 import hudson.Extension;
 import hudson.FilePath;
 import hudson.Launcher;
 import hudson.Util;
+import hudson.model.Computer;
 import hudson.model.ParameterValue;
 import hudson.model.TaskListener;
 import hudson.model.AbstractProject;
@@ -76,6 +78,8 @@ import com.ibm.team.build.internal.hjplugin.util.ValidationResult;
 
 @ExportedBean(defaultVisibility=999)
 public class RTCScm extends SCM {
+
+	private static final String PARAMETER_WORKSPACE = "RTC_BUILD_WORKSPACE"; //$NON-NLS-1$
 
     private static final Logger LOGGER = Logger.getLogger(RTCScm.class.getName());
 
@@ -967,7 +971,7 @@ public class RTCScm extends SCM {
 					"\" buildDefinition=\"" + this.buildDefinition + "\""); //$NON-NLS-1$ //$NON-NLS-2$
 		}
 	}
-	
+
 	@Override
     public DescriptorImpl getDescriptor() {
         return (DescriptorImpl) super.getDescriptor();
@@ -990,10 +994,12 @@ public class RTCScm extends SCM {
         LOGGER.finest("RTCScm.checkout : Begin");
 		listener.getLogger().println(Messages.RTCScm_checkout_started());
 
+		EnvVars envVars = build.getEnvironment(listener);
+		String resolvedBuildWorkspace = resolveBuildWorkspace(envVars);
+
 		String label = getLabel(build);
 		String localBuildToolkit;
 		String nodeBuildToolkit;
-		String buildWorkspace = getBuildWorkspace();
 		String buildDefinition = getBuildDefinition();
 		String buildResultUUID = getBuildResultUUID(build, listener);
 
@@ -1025,7 +1031,7 @@ public class RTCScm extends SCM {
 						" Server URI=\"" + loginInfo.getServerUri() + "\"" + //$NON-NLS-1$ //$NON-NLS-2$
 						" Userid=\"" + loginInfo.getUserId() + "\"" + //$NON-NLS-1$ //$NON-NLS-2$
 						" Build definition=\"" + buildDefinition + "\"" + //$NON-NLS-1$ //$NON-NLS-2$
-						" Build workspace=\"" + buildWorkspace + "\"" + //$NON-NLS-1$ //$NON-NLS-2$
+						" Build workspace=\"" + resolvedBuildWorkspace + "\"" + //$NON-NLS-1$ //$NON-NLS-2$
 						" useBuildDefinitionInBuild=\"" + useBuildDefinitionInBuild + "\"" + //$NON-NLS-1$ //$NON-NLS-2$
 						" Baseline Set name=\"" + label + "\""); //$NON-NLS-1$ //$NON-NLS-2$
 			}
@@ -1094,7 +1100,7 @@ public class RTCScm extends SCM {
 			RTCCheckoutTask checkout = new RTCCheckoutTask(
 					build.getParent().getName() + " " + build.getDisplayName() + " " + node.getDisplayName(), //$NON-NLS-1$ //$NON-NLS-2$
 					nodeBuildToolkit, loginInfo.getServerUri(), loginInfo.getUserId(), loginInfo.getPassword(), loginInfo.getTimeout(), buildResultUUID,
-					buildWorkspace,
+					resolvedBuildWorkspace,
 					label,
 					listener, changeLog,
 					workspacePath.isRemote(), debug, LocaleProvider.getLocale());
@@ -1184,6 +1190,10 @@ public class RTCScm extends SCM {
 			Job<?, ?> project, Launcher launcher, FilePath workspacePath,
 			TaskListener listener, SCMRevisionState revisionState) throws IOException,
 			InterruptedException {
+
+		EnvVars envVars = project.getEnvironment(workspaceToNode(workspacePath), listener);
+		String resolvedBuildWorkspace = resolveBuildWorkspace(envVars);
+
 		// if #requiresWorkspaceForPolling is false, expect that launcher and workspacePath are null
 		LOGGER.finest("RTCScm.compareRemoteRevisionWith : Begin");
 
@@ -1210,7 +1220,7 @@ public class RTCScm extends SCM {
 	    				loginInfo.getServerUri(), loginInfo.getUserId(), loginInfo.getPassword(),
 						loginInfo.getTimeout(),
 						getBuildDefinition(),
-						getBuildWorkspace(),
+						resolvedBuildWorkspace,
 						listener);
 	
 	    		if (changesIncoming.equals(Boolean.TRUE)) {
@@ -1226,7 +1236,7 @@ public class RTCScm extends SCM {
 	    				loginInfo.getServerUri(), loginInfo.getUserId(), loginInfo.getPassword(),
 						loginInfo.getTimeout(), useBuildDefinitionInBuild,
 						getBuildDefinition(),
-						getBuildWorkspace(),
+						resolvedBuildWorkspace,
 						listener);
     			RTCRevisionState currentRevisionState = new RTCRevisionState(currentRevisionHash);
     			Change change = null;
@@ -1444,11 +1454,11 @@ public class RTCScm extends SCM {
     public BuildType getBuildType() {
 		return buildType;
 	}
-	
+
 	public String getBuildWorkspace() {
 		return buildWorkspace;
 	}
-	
+
     @Exported
 	public String getBuildDefinition() {
 		return buildDefinition;
@@ -1523,5 +1533,43 @@ public class RTCScm extends SCM {
 			}
         }
 		return value;
+	}
+
+	private String resolveBuildWorkspace(EnvVars envVars) {
+		String buildWorkspaceEnvVar = envVars.get(PARAMETER_WORKSPACE);
+		return buildWorkspaceEnvVar != null ? buildWorkspaceEnvVar : buildWorkspace;
+	}
+
+	/**
+	 * Helper: find the Node for slave build or return current instance.
+	 *
+	 * @param workspace
+	 * @return
+	 */
+	private Node workspaceToNode(FilePath workspace) {
+		Computer computer = workspaceToComputer(workspace);
+		if (computer != null) {
+			return computer.getNode();
+		}
+		Jenkins jenkins = Jenkins.getInstance();
+		return jenkins;
+	}
+
+	/**
+	 * Helper: find the Remote/Local Computer used for build
+	 *
+	 * @param workspace
+	 * @return
+	 */
+	private Computer workspaceToComputer(FilePath workspace) {
+		Jenkins jenkins = Jenkins.getInstance();
+		if (workspace.isRemote()) {
+			for (Computer computer : jenkins.getComputers()) {
+				if (computer.getChannel() == workspace.getChannel()) {
+					return computer;
+				}
+			}
+		}
+		return null;
 	}
 }
